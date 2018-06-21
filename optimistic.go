@@ -1,4 +1,4 @@
-package optimistic
+package optimisticLock
 
 import (
 	"errors"
@@ -7,49 +7,70 @@ import (
 	"github.com/go-redis/redis"
 )
 
-type Helper struct {
-	redisClient *redis.Client
+func New(r *redis.Client) *LockFactory {
+	return &LockFactory{RedisClient: r}
 }
 
-func New(r *redis.Client) *Helper {
-	return &Helper{redisClient: r}
+type LockFactory struct {
+	RedisClient *redis.Client `inject:""`
 }
 
-func (m *Helper) GetRecord(key string) (content string, originalTime time.Time, found bool) {
-	result, err := m.redisClient.HGetAll(key).Result()
+func (h *LockFactory) Get(key string) *Lock {
+	result, err := h.RedisClient.HGetAll(key).Result()
 	if err == redis.Nil || len(result) == 0 {
-		return ``, time.Time{}, false
+		return nil
 	}
+
 	if err != nil {
-		//unknown error
+		// Unknown error
 		panic(err)
 	}
-	s1, ok1 := result[`content`]
-	s2, ok2 := result[`ts`]
+
+	contentStr, ok1 := result[`content`]
+	updatedAt, ok2 := result[`updated_at`]
 	if ok1 == false || ok2 == false {
-		panic(errors.New(`The value in redis mismatch`))
-	}
-	originalTime, err = time.Parse(time.RFC3339Nano, s2)
-	if err != nil {
-		panic(errors.New(`The "ts" field in optimisticRecord is not valid time.`))
+		panic(errors.New(`The value in redis mismatch. `))
 	}
 
-	return s1, originalTime, true
+	lastUpdatedAt, err := time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		panic(errors.New(`OptimisticLock - Internal error: updated_at is invalid time. `))
+	}
+
+	return &Lock{
+		key,
+		contentStr,
+		lastUpdatedAt,
+		h.RedisClient,
+	}
 }
 
-func (m *Helper) Update(key, content string, originalTime, currentTime time.Time) (updateOK bool) {
-	//FIXME: use evalsha instead of direct scripting
-	script := `
+type Lock struct {
+	Key           string
+	Content       string
+	lastUpdatedAt time.Time
+	redisClient   *redis.Client
+}
+
+func (l *Lock) Update() bool {
+	// FIXME: use evalsha instead of direct scripting
+	result, err := l.redisClient.Eval(`
 if redis.call('EXISTS', KEYS[1]) == 1 then
-	if redis.call('HGET', KEYS[1], 'ts') ~= KEYS[3] then
+	if redis.call('HGET', KEYS[1], 'updated_at') ~= KEYS[3] then
 		return 0
 	end 
 end 
-redis.call('HMSET', KEYS[1], 'content', KEYS[2], 'ts', KEYS[4]) 
+redis.call('HMSET', KEYS[1], 'content', KEYS[2], 'updated_at', KEYS[4]) 
 return 1
-`
-	oriTs, currTs := originalTime.UTC().Format(time.RFC3339Nano), currentTime.UTC().Format(time.RFC3339Nano)
-	result, err := m.redisClient.Eval(script, []string{key, content, oriTs, currTs}).Result()
+`,
+		[]string{
+			l.Key,
+			l.Content,
+			l.lastUpdatedAt.Format(time.RFC3339Nano),
+			time.Now().UTC().Format(time.RFC3339Nano),
+		},
+	).Result()
+
 	if err != nil {
 		panic(err)
 	}
@@ -57,11 +78,13 @@ return 1
 	switch t := result.(type) {
 	case string:
 		return t == `1`
+
 	case int64:
 		return t == 1
+
 	default:
-		//FIXME: should reach this line
-		panic(errors.New(`Unknown return from redis eval.`))
+		// FIXME: should not reach this line
+		panic(errors.New(`Unknown return from redis eval. `))
 	}
 
 	return false
