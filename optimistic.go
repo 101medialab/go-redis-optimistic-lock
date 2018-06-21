@@ -15,8 +15,17 @@ type LockFactory struct {
 	RedisClient *redis.Client `inject:""`
 }
 
-func (h *LockFactory) Get(key string) *Lock {
-	result, err := h.RedisClient.HGetAll(key).Result()
+func (f *LockFactory) CreateDummyLock(key string) *Lock {
+	return &Lock{
+		key,
+		``,
+		time.Now(),
+		f.RedisClient,
+	}
+}
+
+func (f *LockFactory) Get(key string) *Lock {
+	result, err := f.RedisClient.HGetAll(key).Result()
 	if err == redis.Nil || len(result) == 0 {
 		return nil
 	}
@@ -41,7 +50,7 @@ func (h *LockFactory) Get(key string) *Lock {
 		key,
 		contentStr,
 		lastUpdatedAt,
-		h.RedisClient,
+		f.RedisClient,
 	}
 }
 
