@@ -31,19 +31,22 @@ func (f *LockFactory) Get(key string) *Lock {
 	}
 
 	if err != nil {
-		// Unknown error
-		panic(err)
+		time.Sleep(time.Second * 2)
+
+		println(`optimisticLock::Get failed: ` + err.Error(), `retrying after 2 seconds`)
+
+		return f.Get(key)
 	}
 
 	contentStr, ok1 := result[`content`]
 	updatedAt, ok2 := result[`updated_at`]
 	if ok1 == false || ok2 == false {
-		panic(errors.New(`The value in redis mismatch. `))
+		panic(errors.New(`Invalid value stored in Redis. "content": ` + contentStr + `, "updatedAt": ` + updatedAt))
 	}
 
 	lastUpdatedAt, err := time.Parse(time.RFC3339Nano, updatedAt)
 	if err != nil {
-		panic(errors.New(`OptimisticLock - Internal error: updated_at is invalid time. `))
+		panic(errors.New(`OptimisticLock - Internal error: updated_at is invalid time, value: ` + updatedAt))
 	}
 
 	return &Lock{
@@ -81,7 +84,11 @@ return 1
 	).Result()
 
 	if err != nil {
-		panic(err)
+		time.Sleep(time.Second * 2)
+
+		println(`optimisticLock::Update failed: ` + err.Error(), `retrying after 2 seconds`)
+
+		return l.Update()
 	}
 
 	switch t := result.(type) {
